@@ -9,7 +9,14 @@
 
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { mobile, showSidebar, knowledge as _knowledge, config, user } from '$lib/stores';
+	import {
+		mobile,
+		showSidebar,
+		knowledge as _knowledge,
+		config,
+		user,
+		settings
+	} from '$lib/stores';
 
 	import {
 		updateFileDataContentById,
@@ -26,10 +33,7 @@
 		updateFileFromKnowledgeById,
 		updateKnowledgeById
 	} from '$lib/apis/knowledge';
-
-	import { transcribeAudio } from '$lib/apis/audio';
 	import { blobToFile } from '$lib/utils';
-	import { processFile } from '$lib/apis/retrieval';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Files from './KnowledgeBase/Files.svelte';
@@ -89,6 +93,7 @@
 
 	let selectedFile = null;
 	let selectedFileId = null;
+	let comp = false;
 	let selectedFileContent = '';
 
 	// Add cache object
@@ -119,70 +124,67 @@
 	};
 
 	const uploadFileHandler = async (file) => {
-		console.log(file);
-
 		const tempItemId = uuidv4();
+		comp = false;
 		const fileItem = {
-			type: 'file',
-			file: '',
-			id: null,
-			url: '',
 			name: file.name,
 			size: file.size,
 			status: 'uploading',
-			error: '',
+			progress: 0,
 			itemId: tempItemId
 		};
 
-		if (fileItem.size == 0) {
-			toast.error($i18n.t('You cannot upload an empty file.'));
-			return null;
-		}
-
-		if (
-			($config?.file?.max_size ?? null) !== null &&
-			file.size > ($config?.file?.max_size ?? 0) * 1024 * 1024
-		) {
-			console.log('File exceeds max size limit:', {
-				fileSize: file.size,
-				maxSize: ($config?.file?.max_size ?? 0) * 1024 * 1024
-			});
-			toast.error(
-				$i18n.t(`File size should not exceed {{maxSize}} MB.`, {
-					maxSize: $config?.file?.max_size
-				})
-			);
-			return;
-		}
-
+		// Add fileItem to knowledge.files
 		knowledge.files = [...(knowledge.files ?? []), fileItem];
 
-		try {
-			// marking not to process the files being uploaded here as they will be process when added to knowledge
-			// don't want to process twice
-			const uploadedFile = await uploadFile(localStorage.token, file).catch((e) => {
-				toast.error(`${e}`);
-				return null;
-			});
 
-			if (uploadedFile) {
-				knowledge.files = knowledge.files.map((item) => {
+
+		let uploadedFile = null;
+		try {
+			uploadedFile = await uploadFile(localStorage.token, file, true, (percent) => {
+				// Update upload progress, capped at 50%
+				knowledge.files = knowledge.files.map(item => {
 					if (item.itemId === tempItemId) {
-						item.id = uploadedFile.id;
+						item.progress = percent > 50 ? 50 : percent;
+						if (item.progress === 50){
+							item.status = 'processing'
+						}
 					}
 
-					// Remove temporary item id
-					delete item.itemId;
 					return item;
 				});
 
-				await addFileHandler(uploadedFile.id);
-			} else {
-				toast.error($i18n.t('Failed to upload file.'));
-			}
+			});
 		} catch (e) {
-			toast.error(`${e}`);
+			toast.error(`Failed to upload: ${e}`);
+
+			// Mark file as error
+			knowledge.files = knowledge.files.map(item => {
+				if (item.itemId === tempItemId) {
+					item.status = 'error';
+				}
+				return item;
+			});
+
+
+			return;  // Exit early on error
 		}
+
+		// Finalize file in knowledge.files
+		knowledge.files = knowledge.files.map(item => {
+			if (item.itemId === tempItemId) {
+				item.id = uploadedFile.id;
+				delete item.itemId;
+				item.status = 'ready';
+				item.progress = 100;  // Ensure progress shows 100%
+				comp = true
+			}
+			
+			return item;
+		});
+
+		// Final API call to add to knowledge base
+		await addFileHandler(uploadedFile.id);
 	};
 
 	const uploadDirectoryHandler = async () => {
@@ -766,7 +768,7 @@
 										className="input-prose-sm"
 										bind:value={selectedFileContent}
 										placeholder={$i18n.t('Add content here')}
-										preserveBreaks={true}
+										preserveBreaks={false}
 									/>
 								{/key}
 							</div>
@@ -824,7 +826,7 @@
 										className="input-prose-sm"
 										bind:value={selectedFileContent}
 										placeholder={$i18n.t('Add content here')}
-										preserveBreaks={true}
+										preserveBreaks={false}
 									/>
 								{/key}
 							</div>
@@ -895,6 +897,7 @@
 									small
 									files={filteredItems}
 									{selectedFileId}
+									{comp}
 									on:click={(e) => {
 										selectedFileId = selectedFileId === e.detail ? null : e.detail;
 									}}

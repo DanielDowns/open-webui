@@ -7,7 +7,7 @@ from enum import Enum
 from abc import ABC, abstractmethod
 
 from fastapi import Request
-
+import asyncio
 import tiktoken
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
@@ -98,7 +98,6 @@ class DefaultParser(ParserInterface):
         assert texts is not None
 
         embeddings = self.embed(request, texts, user)
-
         assert len(metadatas) == len(texts) and f"length mismatch: metadata {metadatas} vs texts {texts}"
         assert len(metadatas) == len(embeddings) and f"length mismatch: metadata {metadatas} vs embeddings {embeddings}"
 
@@ -161,29 +160,37 @@ class DefaultParser(ParserInterface):
 
         return metadatas
 
-    def embed(self, request, texts, user=None):
-        embedding_function = get_embedding_function(
-            request.app.state.config.RAG_EMBEDDING_ENGINE,
-            request.app.state.config.RAG_EMBEDDING_MODEL,
-            request.app.state.ef,
-            (
-                request.app.state.config.RAG_OPENAI_API_BASE_URL
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_OLLAMA_BASE_URL
-            ),
-            (
-                request.app.state.config.RAG_OPENAI_API_KEY
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_OLLAMA_API_KEY
-            ),
-            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-        )
 
-        embeddings = embedding_function(
-            list(map(lambda x: x.replace("\n", " "), texts)), user=user
-        )
+
+    def embed(self, request, texts, user=None):
+        from open_webui.routers.progress import update_progress  # global progress queue
+
+        model = request.app.state.ef
+        batch_size = request.app.state.config.RAG_EMBEDDING_BATCH_SIZE
+        cleaned_texts = [text.replace("\n", " ") for text in texts]
+
+        total = len(cleaned_texts)
+        embeddings = []
+
+        for i in range(0, total, batch_size):
+            batch = cleaned_texts[i : i + batch_size]
+
+            # Encode this batch
+            batch_embeddings = model.encode(batch).tolist()
+            embeddings.extend(batch_embeddings)
+
+            # Update SSE progress (safely from sync context)
+            update_progress(min(i + batch_size, total), total)
 
         return embeddings
+
+
+
+
+
+
+
+
 
     def store(self, request, collection_name, texts, embeddings, metadatas, overwrite=False, add=True):
         # don't do this until the last step to limit deleting collections if errors are thrown
