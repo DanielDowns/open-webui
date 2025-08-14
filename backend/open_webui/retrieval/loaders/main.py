@@ -2,7 +2,7 @@ import requests
 import logging
 import ftfy
 import sys
-
+from pathlib import Path
 from langchain_community.document_loaders import (
     AzureAIDocumentIntelligenceLoader,
     BSHTMLLoader,
@@ -189,9 +189,14 @@ class Loader:
     def load(
         self, filename: str, file_content_type: str, file_path: str
     ) -> list[Document]:
+        extension = Path(file_path).suffix.lower()
+        if extension == ".doc":
+            log.info(f"Detected .doc file, skipping default loader for custom parser")
+            return []
         loader = self._get_loader(filename, file_content_type, file_path)
         docs = loader.load()
 
+        
         return [
             Document(
                 page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
