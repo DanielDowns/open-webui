@@ -85,7 +85,6 @@ class ChromaClient(VectorDBBase):
                 distances: list = result["distances"][0]
                 distances = [2 - dist for dist in distances]
                 distances = [[dist / 2 for dist in distances]]
-
                 return SearchResult(
                     **{
                         "ids": result["ids"],
@@ -178,12 +177,17 @@ class ChromaClient(VectorDBBase):
     ):
         # Delete the items from the collection based on the ids.
         try:
-            collection = self.client.get_collection(name=collection_name)
-            if collection:
-                if ids:
-                    collection.delete(ids=ids)
-                elif filter:
-                    collection.delete(where=filter)
+            #Changed to where program will search for proper ids to delete (ids from the embedding rather than collection name) in order to delete proper files
+
+            if not ids or not filter:
+                collection = self.client.get_collection(name=collection_name)
+                result = collection.get()
+                ids = result["ids"]
+            
+            if ids:
+                collection.delete(ids=ids)
+            elif filter:
+                collection.delete(where=filter)
         except Exception as e:
             # If collection doesn't exist, that's fine - nothing to delete
             log.debug(

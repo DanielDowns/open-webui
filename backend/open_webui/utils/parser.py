@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 from fastapi import Request
 
 import tiktoken
+from open_webui.config import VECTOR_DB, CHROMA_DATA_PATH
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter, TokenTextSplitter
 from langchain_core.documents import Document
@@ -17,6 +18,10 @@ from open_webui.env import SRC_LOG_LEVELS
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.retrieval.utils import get_embedding_function
 from open_webui.retrieval.vector.connector import VECTOR_DB_CLIENT
+
+import sqlite3
+from pathlib import Path
+import os
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
@@ -37,7 +42,7 @@ class ParserInterface(ABC):
         return True
 
     @abstractmethod
-    def delete_doc(self, collection_name, file_id):
+    def delete_doc(self, collection_name):
         assert NotImplementedError
 
     @abstractmethod
@@ -62,17 +67,26 @@ class ParserInterface(ABC):
     def store(self, request, collection_name, texts, embeddings, metadatas, overwrite=False, add=True):
         assert NotImplementedError
 
+    @abstractmethod
+    def delete_segment_by_file_id(self, file_id_to_remove, collection_name):
+        assert NotImplementedError
 
+    @abstractmethod
+    def compact_chroma_fts(self):
+        assert NotImplementedError
+
+        
 class DefaultParser(ParserInterface):
+
     # Update valves/ environment variables based on your selected database
     def __init__(self, parser_type=PARSER_TYPE.ALL):
         self.name = "Default Parser"
         self.parser_type = parser_type
 
-    def delete_doc(self, collection_name, file_id):
+    def delete_doc(self, collection_name, file_id=None):
         try:
             VECTOR_DB_CLIENT.delete(
-                collection_name=collection_name, filter={"file_id": file_id}
+                collection_name=collection_name
             )
         except Exception as e:
             print(e)
@@ -96,9 +110,12 @@ class DefaultParser(ParserInterface):
         metadatas = self.metadata(request, docs, metadata)
 
         assert texts is not None
-
-        embeddings = self.embed(request, texts, user)
-
+        try:
+            embeddings = self.embed(request, texts, user)
+        except RuntimeError as e:
+            print("embedding was cancelled")
+            raise
+        
         assert len(metadatas) == len(texts) and f"length mismatch: metadata {metadatas} vs texts {texts}"
         assert len(metadatas) == len(embeddings) and f"length mismatch: metadata {metadatas} vs embeddings {embeddings}"
 
@@ -177,6 +194,7 @@ class DefaultParser(ParserInterface):
                 else request.app.state.config.RAG_OLLAMA_API_KEY
             ),
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            track_embedding=True,
         )
 
         embeddings = embedding_function(
@@ -215,3 +233,76 @@ class DefaultParser(ParserInterface):
             collection_name=collection_name,
             items=items,
         )
+
+
+
+    #Searchs for and deletes all pysical vector folder paths
+    #Uses a few presumtions about program operation ie what it is looking for will always be in the first array index
+    def delete_segment_by_file_id(self, file_id_to_remove: str, collection_name: str):
+        assert VECTOR_DB == "chroma", "Vector DB is not Chroma. Skipping segment deletion."
+
+        try:
+            db_path = Path(CHROMA_DATA_PATH) / "chroma.sqlite3"
+            conn = sqlite3.connect(str(db_path))
+            cursor = conn.cursor()
+
+            cursor.execute("SELECT id FROM collections WHERE name = ?", (file_id_to_remove,))
+            collection_row = cursor.fetchone()
+
+            if not collection_row:
+                print(f"No collection found with name: {file_id_to_remove}")
+                return
+
+            collection_id = collection_row[0]
+            print(f"Collection ID for '{file_id_to_remove}': {collection_id}")
+
+            cursor.execute("SELECT id FROM segments WHERE collection = ?", (collection_id,))
+            segment_rows = cursor.fetchall()
+
+            if not segment_rows:
+                print(f"No segments found for collection ID: {collection_id}")
+                return
+
+            segment_path = Path(CHROMA_DATA_PATH) / segment_rows[0][0]
+            print(f"Segment path: {segment_path}")
+
+            if not os.path.isdir(segment_path):
+                print(f"Segment path does not exist: {segment_path}")
+                
+
+            for root, dirs, files in os.walk(segment_path, topdown=False):
+                for file in files:
+                    os.remove(Path(root) / file)
+                for dir in dirs:
+                    os.rmdir(Path(root) / dir)
+
+            os.rmdir(segment_path)
+            print(f"Deleted phyiscal segment path: {segment_path}")
+
+            print("Deleting segment metadatas")
+
+            cursor.execute("DELETE FROM collection_metadata WHERE collection_id = ?", (collection_id,))
+
+            cursor.execute("DELETE FROM segment_metadata WHERE segment_id = ?", (segment_rows[0][0],))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error during segment deletion: {e}")
+
+
+    #Removes empty data cells. Slows down system, but decreases file size
+    def compact_chroma_fts(self):
+        assert VECTOR_DB == "chroma", "Vector DB is not Chroma. Skipping segment deletion."
+        
+        sqlite_path = Path(CHROMA_DATA_PATH) / "chroma.sqlite3"
+        conn = sqlite3.connect(sqlite_path)
+        cursor = conn.cursor()
+        try:
+            # Vacuum to shrink file
+            cursor.execute("VACUUM;")
+            print("FTS index rebuilt and database vacuumed.")
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        finally:
+            conn.commit()
+            conn.close()

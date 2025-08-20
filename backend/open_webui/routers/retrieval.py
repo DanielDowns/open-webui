@@ -864,7 +864,9 @@ def process_file(
     user=Depends(get_verified_user),
 ):
     try:
+        global fileEmbed_id 
         file = Files.get_file_by_id(form_data.file_id)
+        fileEmbed_id = file.id
         collection_name = f"file-{file.id}"
 
         if form_data.content:
@@ -872,8 +874,8 @@ def process_file(
             # Usage: /files/{file_id}/data/content/update, /files/ (audio file upload pipeline)
 
             # /files/{file_id}/data/content/update
-            VECTOR_DB_CLIENT.delete_collection(collection_name=f"file-{file.id}")
-
+            VECTOR_DB_CLIENT.delete_collection(collection_name=collection_name)
+            VECTOR_DB_CLIENT.delete(collection_name=collection_name)
             docs = [
                 Document(
                     page_content=form_data.content.replace("<br/>", "\n"),
@@ -961,18 +963,28 @@ def process_file(
             try:
                 for parser in parsers:
                     parser.is_applicable_to_item(file.filename)
-                    result_dict = parser.parse(
-                        request,
-                        docs=docs,
-                        metadata={
-                            "file_id": file.id,
-                            "name": file.filename,
-                            "hash": hash,
-                        },
-                        user=user,
-                        file_path=file.path
-                    )
-
+                    try:
+                        result_dict = parser.parse(
+                            request,
+                            docs=docs,
+                            metadata={
+                                "file_id": file.id,
+                                "name": file.filename,
+                                "hash": hash,
+                            },
+                            user=user,
+                            file_path=file.path
+                        )
+                    #Error occurs when embedding is cancelled. removes the downloaded file if this occurs
+                    except RuntimeError as e:
+                        
+                        if os.path.exists(file_path):
+                            print("Remove downloaded file")
+                            os.remove(file_path)
+                        else:
+                            print("No file to remove")
+                        raise HTTPException(status_code=499, detail= "Embedding cancelled by user.")
+                    
                     Files.update_file_data_by_id(
                         file.id,
                         {f"parser_{parser.name}_content": result_dict},
@@ -1015,6 +1027,8 @@ class ProcessTextForm(BaseModel):
     content: str
     collection_name: Optional[str] = None
 
+def get_file_id():
+    return fileEmbed_id
 
 @router.post("/process/text")
 def process_text(
