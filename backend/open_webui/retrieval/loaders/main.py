@@ -2,7 +2,7 @@ import requests
 import logging
 import ftfy
 import sys
-
+from pathlib import Path
 from langchain_community.document_loaders import (
     AzureAIDocumentIntelligenceLoader,
     BSHTMLLoader,
@@ -18,10 +18,11 @@ from langchain_community.document_loaders import (
     UnstructuredRSTLoader,
     UnstructuredXMLLoader,
     YoutubeLoader,
+    UnstructuredFileLoader
 )
 from langchain_core.documents import Document
-
 from open_webui.retrieval.loaders.mistral import MistralLoader
+from spire.doc import Document as SpireDocument, FileFormat
 
 from open_webui.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
 
@@ -189,15 +190,24 @@ class Loader:
     def load(
         self, filename: str, file_content_type: str, file_path: str
     ) -> list[Document]:
-        loader = self._get_loader(filename, file_content_type, file_path)
-        docs = loader.load()
+        # extension = Path(file_path).suffix.lower()
+        # if extension == ".doc":
+        #     log.info(f"Detected .doc file, skipping default loader for custom parser")
+        #     return []
+        try:
+            loader = self._get_loader(filename, file_content_type, file_path)
+            docs = loader.load()
 
-        return [
-            Document(
-                page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
-            )
-            for doc in docs
-        ]
+            return [
+                Document(
+                    page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
+                )
+                for doc in docs
+            ]
+        except Exception as e:
+            #log.error(f"Failed to load file {filename}: {e}")
+            # should trace to the real source of the error
+            raise 
 
     def _is_text_file(self, file_ext: str, file_content_type: str) -> bool:
         return file_ext in known_source_ext or (
@@ -208,6 +218,7 @@ class Loader:
         file_ext = filename.split(".")[-1].lower()
 
         if self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
+            log.info("We are in tika")
             if self._is_text_file(file_ext, file_content_type):
                 loader = TextLoader(file_path, autodetect_encoding=True)
             else:
@@ -220,6 +231,7 @@ class Loader:
         elif self.engine == "docling" and self.kwargs.get("DOCLING_SERVER_URL"):
             if self._is_text_file(file_ext, file_content_type):
                 loader = TextLoader(file_path, autodetect_encoding=True)
+                log.info("In docling, using text loader")
             else:
                 loader = DoclingLoader(
                     url=self.kwargs.get("DOCLING_SERVER_URL"),
@@ -240,7 +252,7 @@ class Loader:
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     "application/vnd.ms-powerpoint",
-                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 ]
             )
         ):
@@ -263,6 +275,9 @@ class Loader:
                 loader = PyPDFLoader(
                     file_path, extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES")
                 )
+            elif file_ext == "doc":
+                docx_path = doc_to_docx(Path(file_path))
+                loader = Docx2txtLoader(str(docx_path))
             elif file_ext == "csv":
                 loader = CSVLoader(file_path, autodetect_encoding=True)
             elif file_ext == "rst":
@@ -299,3 +314,17 @@ class Loader:
                 loader = TextLoader(file_path, autodetect_encoding=True)
 
         return loader
+
+def doc_to_docx(doc_path: Path) -> Path:
+    """
+    Converts a .doc file to .docx using Spire.Doc
+    Returns path to the new .docx file
+    """
+    
+    docx_path = doc_path.with_suffix(".docx")
+    document = SpireDocument()
+    document.LoadFromFile(str(doc_path))  # Load the .doc file, not .docx
+    document.SaveToFile(str(docx_path), FileFormat.Docx2016)
+    document.Close()
+    return docx_path
+
