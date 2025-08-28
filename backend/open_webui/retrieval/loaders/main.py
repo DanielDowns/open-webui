@@ -206,7 +206,8 @@ class Loader:
             ]
         except Exception as e:
             #log.error(f"Failed to load file {filename}: {e}")
-            raise e
+            # should trace to the real source of the error
+            raise 
 
     def _is_text_file(self, file_ext: str, file_content_type: str) -> bool:
         return file_ext in known_source_ext or (
