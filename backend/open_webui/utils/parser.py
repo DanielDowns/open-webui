@@ -67,6 +67,36 @@ class ParserInterface(ABC):
     def store(self, request, collection_name, texts, embeddings, metadatas, overwrite=False, add=True):
         assert NotImplementedError
 
+
+    def _embed(self, request, texts, user=None):
+        '''
+        embedding function used after parsing and before storing. Should not be overridden,
+        as identical embeddings need to be used in both storage and retrieval
+        '''
+        embedding_function = get_embedding_function(
+            request.app.state.config.RAG_EMBEDDING_ENGINE,
+            request.app.state.config.RAG_EMBEDDING_MODEL,
+            request.app.state.ef,
+            (
+                request.app.state.config.RAG_OPENAI_API_BASE_URL
+                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                else request.app.state.config.RAG_OLLAMA_BASE_URL
+            ),
+            (
+                request.app.state.config.RAG_OPENAI_API_KEY
+                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
+                else request.app.state.config.RAG_OLLAMA_API_KEY
+            ),
+            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            track_embedding=True,
+        )
+
+        embeddings = embedding_function(
+            list(map(lambda x: x.replace("\n", " "), texts)), user=user
+        )
+
+        return embeddings
+
         
 class DefaultParser(ParserInterface):
 
@@ -103,7 +133,7 @@ class DefaultParser(ParserInterface):
 
         assert texts is not None
         try:
-            embeddings = self.embed(request, texts, user)
+            embeddings = self._embed(request, texts, user)
         except RuntimeError as e:
             log.debug("embedding was cancelled")
             raise
@@ -169,31 +199,6 @@ class DefaultParser(ParserInterface):
                     metadata[key] = str(value)
 
         return metadatas
-
-    def embed(self, request, texts, user=None):
-        embedding_function = get_embedding_function(
-            request.app.state.config.RAG_EMBEDDING_ENGINE,
-            request.app.state.config.RAG_EMBEDDING_MODEL,
-            request.app.state.ef,
-            (
-                request.app.state.config.RAG_OPENAI_API_BASE_URL
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_OLLAMA_BASE_URL
-            ),
-            (
-                request.app.state.config.RAG_OPENAI_API_KEY
-                if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-                else request.app.state.config.RAG_OLLAMA_API_KEY
-            ),
-            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-            track_embedding=True,
-        )
-
-        embeddings = embedding_function(
-            list(map(lambda x: x.replace("\n", " "), texts)), user=user
-        )
-
-        return embeddings
 
     def store(self, request, collection_name, texts, embeddings, metadatas, overwrite=False, add=True):
         # don't do this until the last step to limit deleting collections if errors are thrown
